@@ -66,6 +66,11 @@ struct SubscriptionManager {
             Log.d(tag, "Polling success, \(messages.count) new message(s)", messages)
             if !messages.isEmpty {
                 store.save(notificationsFromMessages: messages, withSubscription: subscription)
+                // Without Firebase/FCM (simulator/dev), turn polled messages into local
+                // system notifications so CLI publish → pull-to-refresh shows banners + actions.
+                if !FirebaseSupport.isEnabled, let baseUrl = subscription.baseUrl {
+                    LocalNotificationPresenter.presentNewMessages(baseUrl: baseUrl, messages: messages)
+                }
             }
             completionHandler(messages)
         }
