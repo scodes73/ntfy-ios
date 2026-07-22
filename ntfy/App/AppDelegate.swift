@@ -219,20 +219,49 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
         }
         
         let baseUrl = userInfo["base_url"] as? String ?? Config.appBaseUrl
-        let action = message.actions?.first { $0.id == response.actionIdentifier }
-        
-        // Show current topic
+        let actionId = response.actionIdentifier
+
+        // Default tap on the notification body → open topic (and optional click URL)
+        if actionId == UNNotificationDefaultActionIdentifier {
+            if message.topic != "" {
+                selectedBaseUrl = topicUrl(baseUrl: baseUrl, topic: message.topic)
+            }
+            if let click = message.click, click != "", let url = URL(string: click) {
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            }
+            completionHandler()
+            return
+        }
+
+        // System dismiss — nothing to execute
+        if actionId == UNNotificationDismissActionIdentifier {
+            completionHandler()
+            return
+        }
+
+        // Match action button: by id, or by synthesized id used when server omitted id
+        let action = message.actions?.enumerated().first { index, action in
+            if !action.id.isEmpty {
+                return action.id == actionId
+            }
+            return actionId == "action_\(index)_\(action.action)"
+        }?.element
+
+        // Navigate to topic when a button is pressed (user is interacting with this message)
         if message.topic != "" {
             selectedBaseUrl = topicUrl(baseUrl: baseUrl, topic: message.topic)
         }
-        
-        // Execute user action or click action (if any)
+
         if let action = action {
             ActionExecutor.execute(action)
-        } else if let click = message.click, click != "", let url = URL(string: click) {
-            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            // clear=true → remove this notification from the shade after the action
+            if action.clear == true {
+                center.removeDeliveredNotifications(withIdentifiers: [response.notification.request.identifier])
+            }
+        } else {
+            Log.w(tag, "No matching action for identifier \(actionId)", userInfo)
         }
-    
+
         completionHandler()
     }
 }

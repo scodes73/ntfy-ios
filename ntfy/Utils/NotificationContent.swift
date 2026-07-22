@@ -160,26 +160,61 @@ extension UNMutableNotificationContent {
         }
     }
 
+    /// Registers interactive action buttons on the lock screen / expanded notification.
+    ///
+    /// Important details:
+    /// - Category must be registered **before** the notification is delivered (async-only registration races).
+    /// - Category id is **unique per message** so concurrent notifications keep the correct button set.
+    /// - iOS / ntfy support up to 3 user actions.
     private func configureNotificationActions(message: Message) {
         let userActions = message.actions ?? []
-        let actions = userActions.prefix(4).map {
-            UNNotificationAction(identifier: $0.id, title: $0.label, options: [.foreground])
-        }
-
-        guard !actions.isEmpty else {
+        guard !userActions.isEmpty else {
             categoryIdentifier = ""
             return
         }
 
-        let categoryIdentifier = "ntfyActions"
-        self.categoryIdentifier = categoryIdentifier
+        // Unique category so each notification keeps its own button labels/ids
+        let categoryId = "ntfy.actions.\(message.id)"
+        categoryIdentifier = categoryId
 
-        let center = UNUserNotificationCenter.current()
-        let category = UNNotificationCategory(identifier: categoryIdentifier, actions: actions, intentIdentifiers: [])
-        center.getNotificationCategories { existingCategories in
-            let preservedCategories = existingCategories.filter { $0.identifier != categoryIdentifier }
-            center.setNotificationCategories(Set(preservedCategories).union([category]))
+        let unActions: [UNNotificationAction] = userActions.prefix(3).enumerated().map { index, action in
+            // Server may omit id; identifiers must be non-empty for didReceive matching.
+            let identifier = action.id.isEmpty ? "action_\(index)_\(action.action)" : action.id
+            // view: bring app/URL to foreground. http: run without forcing UI.
+            let options: UNNotificationActionOptions = (action.action == "view") ? [.foreground] : []
+            return UNNotificationAction(identifier: identifier, title: action.label, options: options)
         }
+
+        let category = UNNotificationCategory(
+            identifier: categoryId,
+            actions: unActions,
+            intentIdentifiers: [],
+            options: []
+        )
+
+        // Merge with existing ntfy action categories, then register before delivery.
+        // Previously this used async getNotificationCategories without waiting, so the
+        // notification often appeared with a category id but no registered buttons.
+        let center = UNUserNotificationCenter.current()
+        let lock = DispatchSemaphore(value: 0)
+        var toRegister = Set<UNNotificationCategory>([category])
+        center.getNotificationCategories { existing in
+            let others = existing.filter {
+                $0.identifier != categoryId && $0.identifier.hasPrefix("ntfy.actions.")
+            }
+            var merged = Set(others).union([category])
+            if merged.count > 40 {
+                // Prefer keeping the newest category; drop arbitrary older ones
+                merged = Set(Array(merged.suffix(40)))
+            }
+            toRegister = merged
+            lock.signal()
+        }
+        if lock.wait(timeout: .now() + 0.8) == .timedOut {
+            // Time budget (esp. NSE): still register at least this notification's buttons
+            toRegister = [category]
+        }
+        center.setNotificationCategories(toRegister)
     }
 
     private func completeAttachmentHandling(message: Message, didAttachImage: Bool, completionHandler: @escaping () -> Void) {
