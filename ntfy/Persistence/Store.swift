@@ -34,20 +34,53 @@ class Store: ObservableObject {
     static let autoDownload5MB = Constants.autoDownload5MB
     static let autoDownload10MB = Constants.autoDownload10MB
     static let autoDownload50MB = Constants.autoDownload50MB
-    private static let sharedDefaults = UserDefaults(suiteName: Store.appGroup)!
+    /// Shared defaults for app ↔ extension. Falls back to standard when App Group is unavailable
+    /// (unsigned simulator installs / missing entitlement).
+    private static let sharedDefaults: UserDefaults = {
+        if let suite = UserDefaults(suiteName: Store.appGroup) {
+            // Probe write so we detect a broken app-group suite early
+            suite.set(true, forKey: "__ntfy_app_group_probe")
+            suite.removeObject(forKey: "__ntfy_app_group_probe")
+            return suite
+        }
+        Log.w(Store.tag, "App Group UserDefaults unavailable; using standard UserDefaults (dev/simulator fallback)")
+        return .standard
+    }()
     private static let sharedDefaultsKeyCriticalAlertsAuthorized = "criticalAlertsAuthorized"
     private let container: NSPersistentContainer
+    /// True when store lives in the app group (shared with NSE). False in local-dev fallback.
+    private let usesAppGroupStore: Bool
     var context: NSManagedObjectContext {
         return container.viewContext
     }
     private var cancellables: Set<AnyCancellable> = []
 
+    /// SQLite URL for Core Data. Prefers App Group; falls back to Application Support for
+    /// simulator/dev builds that lack the group entitlement (force-unwrap used to crash here).
+    private static func persistentStoreURL(inMemory: Bool) -> (url: URL, usesAppGroup: Bool) {
+        if inMemory {
+            return (URL(fileURLWithPath: "/dev/null"), false)
+        }
+        if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Store.appGroup) {
+            return (groupURL.appendingPathComponent("ntfy.sqlite"), true)
+        }
+        // Dev/simulator fallback (no App Group container)
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = support.appendingPathComponent("ntfy", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        Log.w(Store.tag, "App Group container unavailable; using local store at \(dir.path)")
+        return (dir.appendingPathComponent("ntfy.sqlite"), false)
+    }
+
     init(inMemory: Bool = false) {
-        let storeUrl = (inMemory) ? URL(fileURLWithPath: "/dev/null") : FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: Store.appGroup)!
-            .appendingPathComponent("ntfy.sqlite")
-        let description = NSPersistentStoreDescription(url: storeUrl)
-        description.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
+        let store = Store.persistentStoreURL(inMemory: inMemory)
+        usesAppGroupStore = store.usesAppGroup
+        let description = NSPersistentStoreDescription(url: store.url)
+        // Remote-change notifications only matter when the NSE shares the same store.
+        if store.usesAppGroup {
+            description.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
+        }
         description.shouldMigrateStoreAutomatically = true
         description.shouldInferMappingModelAutomatically = true
 
@@ -57,6 +90,8 @@ class Store: ObservableObject {
         container.loadPersistentStores { description, error in
             if let error = error {
                 Log.e(Store.tag, "Core Data failed to load: \(error.localizedDescription)", error)
+            } else {
+                Log.d(Store.tag, "Core Data loaded at \(description.url?.path ?? "?") appGroup=\(store.usesAppGroup)")
             }
         }
         
@@ -67,6 +102,7 @@ class Store: ObservableObject {
         
         // When a remote change comes in (= the app extension updated entities in Core Data),
         // we force refresh the view with horrible means. Please help me make this better!
+        guard store.usesAppGroup else { return }
         NotificationCenter.default
           .publisher(for: .NSPersistentStoreRemoteChange)
           .sink { value in
