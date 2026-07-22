@@ -17,16 +17,23 @@ class AppDelegate: UIResponder, UIApplicationDelegate, ObservableObject {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         Log.d(tag, "Launching AppDelegate")
 
-        FirebaseApp.configure()
-        FirebaseConfiguration.shared.setLoggerLevel(.max)
+        // Simulator/dev: skip Firebase so we can run without a real GoogleService-Info setup.
+        // Real-device builds still configure Firebase when enabled.
+        if FirebaseSupport.isEnabled {
+            FirebaseApp.configure()
+            FirebaseConfiguration.shared.setLoggerLevel(.max)
+            Messaging.messaging().delegate = self
+            Log.d(tag, "Firebase enabled")
+        } else {
+            Log.d(tag, "Firebase disabled (simulator/dev mode) — local notifications + polling still work")
+        }
 
         // Register app permissions for push notifications
         UNUserNotificationCenter.current().delegate = self
-        Messaging.messaging().delegate = self
         requestStandardNotificationAuthorization()
         refreshNotificationSettings()
         
-        // Register too receive remote notifications
+        // Register to receive remote notifications (no-op-ish on sim without APNs/FCM)
         application.registerForRemoteNotifications()
                 
         return true
@@ -141,6 +148,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate, ObservableObject {
     
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let token = deviceToken.map { data in String(format: "%02.2hhx", data) }.joined()
+        guard FirebaseSupport.isEnabled else {
+            Log.d(tag, "Registered for remote notifications (Firebase off); token \(token.prefix(12))...")
+            return
+        }
         Messaging.messaging().apnsToken = deviceToken
         Log.d(tag, "Registered for remote notifications. Passing APNs token \(token.prefix(12))... to Firebase")
     }
@@ -268,6 +279,8 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
 
 extension AppDelegate: MessagingDelegate {
     func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
+        guard FirebaseSupport.isEnabled else { return }
+
         if let fcmToken = fcmToken, !fcmToken.isEmpty {
             Log.d(tag, "Firebase token received: \(fcmToken.prefix(12))...")
         } else {
@@ -297,6 +310,39 @@ extension AppDelegate: MessagingDelegate {
                     }
                 }
             }
+        }
+    }
+}
+
+// MARK: - Simulator / dev: local notification with action buttons
+extension AppDelegate {
+    /// Posts a local notification with interactive action buttons (for Simulator / no-Firebase testing).
+    /// Long-press (or expand) the notification, then tap a button.
+    func postDevActionButtonsNotification(
+        title: String = "Action buttons test",
+        body: String = "Long-press / expand, then tap a button",
+        actions: [Action]? = nil
+    ) {
+        let message = Message(
+            id: "dev-\(UUID().uuidString.prefix(8))",
+            time: Int64(Date().timeIntervalSince1970),
+            event: "message",
+            topic: "dev-actions",
+            message: body,
+            title: title,
+            priority: 4,
+            tags: ["iphone"],
+            actions: actions ?? [
+                Action(id: "proceed", action: "view", label: "Yes, continue", url: "https://ntfy.sh", method: nil, headers: nil, body: nil, clear: true),
+                Action(id: "abort", action: "http", label: "Dismiss", url: "https://ntfy.sh", method: "POST", headers: nil, body: nil, clear: true),
+                Action(id: "later", action: "view", label: "Later", url: "https://ntfy.sh/docs", method: nil, headers: nil, body: nil, clear: false),
+            ],
+            click: nil,
+            pollId: nil,
+            attachment: nil
+        )
+        showNotification(baseUrl: Config.appBaseUrl, message) {
+            Log.d(self.tag, "Dev action-buttons notification posted id=\(message.id)")
         }
     }
 }

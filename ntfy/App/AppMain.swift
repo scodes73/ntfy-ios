@@ -1,5 +1,4 @@
 import SwiftUI
-import Firebase
 
 // TODO: Errors are not shown to the user, but instead just logged
 
@@ -13,6 +12,7 @@ struct AppMain: App {
     init() {
         Log.d(tag, "Launching ntfy 🥳. Welcome!")
         Log.d(tag, "Base URL is \(Config.appBaseUrl), user agent is \(ApiService.userAgent)")
+        Log.d(tag, "FirebaseSupport.isEnabled=\(FirebaseSupport.isEnabled) simulatorDev=\(FirebaseSupport.isSimulatorDevMode)")
     }
     
     var body: some Scene {

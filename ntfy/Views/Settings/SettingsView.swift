@@ -27,6 +27,19 @@ struct SettingsView: View {
                 ) {
                     CriticalAlertsSettingView()
                 }
+                #if targetEnvironment(simulator)
+                Section(
+                    header: Text("Simulator / Dev"),
+                    footer: Text("Firebase is off in the simulator by default. Use this to fire a local notification with action buttons — go Home or lock the sim, long-press the notification, then tap a button.")
+                ) {
+                    Button("Test notification action buttons") {
+                        delegate.postDevActionButtonsNotification()
+                    }
+                    Text(FirebaseSupport.isEnabled ? "Firebase: on" : "Firebase: off (local notifs only)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                #endif
                 Section(
                     header: Text("Users"),
                     footer: Text("To access read-protected topics, you may add or edit users here. All topics for a given server will use the same user.")

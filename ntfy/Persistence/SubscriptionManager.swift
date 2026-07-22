@@ -11,12 +11,16 @@ struct SubscriptionManager {
         let normalizedBaseUrl = normalizeBaseUrl(baseUrl)
         let firebaseTopicName = firebaseTopic(baseUrl: normalizedBaseUrl, topic: topic)
         Log.d(tag, "Subscribing to \(topicUrl(baseUrl: normalizedBaseUrl, topic: topic))")
-        Messaging.messaging().subscribe(toTopic: firebaseTopicName) { error in
-            if let error {
-                Log.e(tag, "Firebase subscribe failed for \(firebaseTopicName)", error)
-            } else {
-                Log.d(tag, "Firebase subscribe succeeded for \(firebaseTopicName)")
+        if FirebaseSupport.isEnabled {
+            Messaging.messaging().subscribe(toTopic: firebaseTopicName) { error in
+                if let error {
+                    Log.e(tag, "Firebase subscribe failed for \(firebaseTopicName)", error)
+                } else {
+                    Log.d(tag, "Firebase subscribe succeeded for \(firebaseTopicName)")
+                }
             }
+        } else {
+            Log.d(tag, "Skipping Firebase subscribe (dev/simulator mode) for \(firebaseTopicName)")
         }
         let subscription = store.saveSubscription(baseUrl: normalizedBaseUrl, topic: topic)
         poll(subscription)
@@ -25,7 +29,7 @@ struct SubscriptionManager {
     func unsubscribe(_ subscription: Subscription) {
         Log.d(tag, "Unsubscribing from \(subscription.urlString())")
         DispatchQueue.main.async {
-            if let baseUrl = subscription.baseUrl, let topic = subscription.topic {
+            if FirebaseSupport.isEnabled, let baseUrl = subscription.baseUrl, let topic = subscription.topic {
                 let firebaseTopicName = firebaseTopic(baseUrl: baseUrl, topic: topic)
                 Messaging.messaging().unsubscribe(fromTopic: firebaseTopicName) { error in
                     if let error {
